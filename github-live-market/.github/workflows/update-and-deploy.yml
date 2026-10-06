@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths-ignore: ['data/snapshot.json', 'README.md', 'tests/**']
+    paths-ignore: ['data/snapshot.json', 'snapshot.json', 'README.md', 'tests/**']
 permissions:
   contents: write
   pages: write
@@ -41,7 +41,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add data/snapshot.json
+          git add data/snapshot.json snapshot.json
           if ! git diff --cached --quiet; then
             git commit -m 'Update shared market snapshot [skip ci]'
             git push
