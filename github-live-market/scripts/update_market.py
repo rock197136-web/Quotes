@@ -39,11 +39,12 @@ def validate_post(p,models,now):
         elif item.get('model') not in models:raise ValueError('商品型號不在圖鑑')
         x.update(price_twd=price,status=st,kind=kind,condition=cn,version=ver)
         if st=='成交':
-            sold=instant(item['sold_at'])
-            if sold<published or sold>now:raise ValueError('成交時間早於發文或在未來')
+            if item.get('sold_at') is not None:
+                sold=instant(item['sold_at'])
+                if sold<published or sold>now:raise ValueError('成交時間早於發文或在未來')
             # Price must be the seller-declared final price, not a retained asking price.
             if item.get('price_basis')!='seller_confirmed_final':raise ValueError('未確認成交價，不能使用原開價')
-            x.update(sold_at=item['sold_at'],price_basis='seller_confirmed_final',evidence_excerpt=text(item.get('evidence_excerpt'),2000))
+            x.update(sold_at=item.get('sold_at'),price_basis='seller_confirmed_final',evidence_excerpt=text(item.get('evidence_excerpt'),2000))
         clean.append(x)
     return dict(group_name=text(p.get('group_name',GROUPS[gid]),200),post_url=url,published_at=p['published_at'],excerpt=excerpt,capture_method='original_post',transaction_evidence=text(p.get('transaction_evidence',''),2000,False),listings=clean)
 
@@ -75,7 +76,7 @@ def index_refs(results,now):
         # Adjacent "other posts" prices don't belong to the indexed source post.
         excerpt=re.split(r'Other posts|其他貼文',excerpt,flags=re.I)[0].strip()
         if not excerpt:continue
-        out.append(dict(group_id=gid,group_name=GROUPS[gid],post_url=url,title=title[:300],excerpt=excerpt[:2000],status='未分類',capture_method='search_index',published_at=None,captured_at=now.isoformat(),collected_on=now.astimezone(timezone(timedelta(hours=8))).date().isoformat(),verification='unverified'))
+        out.append(dict(group_id=gid,group_name=GROUPS[gid],post_url=url,title=title[:300],excerpt=excerpt[:2000],status='未分類',capture_method='search_index',published_at=None,captured_at=now.isoformat(timespec='seconds'),collected_on=now.astimezone(timezone(timedelta(hours=8))).date().isoformat(),verification='unverified'))
     return out
 
 def update(root=ROOT):
@@ -96,10 +97,11 @@ def update(root=ROOT):
             posts=merge_posts(posts,accepted);verified_ok+=1
         except Exception as exc:errors.append({'source':f'feed_{n+1}','reason':type(exc).__name__})
     key=os.environ.get('FIRECRAWL_API_KEY','').strip()
-    if key:
+    search_enabled=os.environ.get('FIRECRAWL_SEARCH_ENABLED','1')!='0'
+    if search_enabled:
         for gid in GROUPS:
             try:
-                result=request_json('https://api.firecrawl.dev/v2/search',{'query':f'site:facebook.com/groups/{gid} 陀螺 二手 已售出','limit':10,'sources':['web'],'domainTools':False},key)
+                result=request_json('https://api.firecrawl.dev/v2/search',{'query':f'site:facebook.com/groups/{gid} 陀螺 出售 全新 二手','limit':20 if key else 3,'sources':['web'],'domainTools':False},key)
                 if not result.get('success'):raise ValueError('搜尋服務失敗')
                 body=result.get('data',{});web=body.get('web',[]) if isinstance(body,dict) else body
                 if not isinstance(web,list):raise ValueError('搜尋格式無效')
@@ -108,11 +110,12 @@ def update(root=ROOT):
             except Exception as exc:errors.append({'source':f'group_{gid}','reason':type(exc).__name__})
     # Retain prior confirmed records on feed failure; refresh age from true event timestamps.
     prior=old.get('collection',{})
-    result={'schema_version':2,'captured_at':now.isoformat(timespec='seconds'),'posts':posts,'references':list(refs.values())[-2000:],'collection':{'status':'ok' if feed_urls and verified_ok==len(feed_urls) and not errors else 'partial' if verified_ok or search_ok else 'pending' if not feed_urls and not key else 'error','last_attempt_at':now.isoformat(timespec='seconds'),'last_verified_fetch_at':now.isoformat(timespec='seconds') if verified_ok else prior.get('last_verified_fetch_at'),'verified_feed_configured':bool(feed_urls),'verified_feeds_ok':verified_ok,'reference_groups_ok':search_ok,'new_posts':len(new_urls),'new_references':len(set(refs)-before),'errors':errors}}
+    result={'schema_version':2,'captured_at':now.isoformat(timespec='seconds'),'posts':posts,'references':list(refs.values())[-2000:],'collection':{'status':'ok' if not errors and (verified_ok or search_ok) else 'partial' if verified_ok or search_ok else 'error' if errors else 'pending','last_attempt_at':now.isoformat(timespec='seconds'),'last_verified_fetch_at':now.isoformat(timespec='seconds') if verified_ok else prior.get('last_verified_fetch_at'),'verified_feed_configured':bool(feed_urls),'verified_feeds_ok':verified_ok,'reference_groups_ok':search_ok,'last_reference_fetch_at':now.isoformat(timespec='seconds') if search_ok else prior.get('last_reference_fetch_at'),'new_posts':len(new_urls),'new_references':len(set(refs)-before),'errors':errors}}
     if len(posts)>5000 or sum(len(p['listings']) for p in posts)>20000:raise ValueError('原文或商品總數超限，保留原檔')
     encoded=json.dumps(result,ensure_ascii=False,indent=2)
     if len(encoded.encode())>LIMIT:raise ValueError('快照過大，保留原檔')
     temp=path.with_suffix('.tmp');temp.write_text(encoded);temp.replace(path)
+    (root/'snapshot.json').write_text(encoded)
     print(json.dumps({'status':result['collection']['status'],'posts':len(posts),'references':len(refs),'feed_ok':verified_ok,'search_ok':search_ok},ensure_ascii=False))
     return result
 if __name__=='__main__':update()
